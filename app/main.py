@@ -1,28 +1,31 @@
 from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from databases import Database
-from sqlalchemy import Table, Column, Integer, String, MetaData
+from sqlalchemy import Table, Column, Integer, String, DateTime, ForeignKey, MetaData
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from pydantic import BaseModel
 from datetime import datetime, timedelta
-from app.models import database, documents  
 import os
+import sqlalchemy
+
+# Import your pdf extraction code
+from app.document_processor import extract_text_from_pdf
 
 # Constants (replace SECRET_KEY with your secure value)
 DATABASE_URL = "sqlite:///./test.db"
-SECRET_KEY = "your_very_secret_key"  
+SECRET_KEY = "your_very_secret_key"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# Initialize FastAPI and database
+# Initialize FastAPI app
 app = FastAPI()
+
+# Initialize the database and metadata ONLY ONCE here for all tables!
 database = Database(DATABASE_URL)
 metadata = MetaData()
 
-
-#TODO: User Account
-# Users table definition
+# Define Users table
 users = Table(
     "users",
     metadata,
@@ -32,13 +35,24 @@ users = Table(
     Column("hashed_password", String(255)),
 )
 
-# Password hashing
+# Define Documents table
+documents = Table(
+    "documents",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id")),
+    Column("filename", String(100)),
+    Column("summary", String(1000)),
+    Column("upload_time", DateTime, default=datetime.utcnow),
+)
+
+# Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# OAuth2 scheme for Bearer tokens
+# OAuth2 scheme for Bearer token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Pydantic models for user creation and token response
+# Pydantic models for request/response validation
 class UserCreate(BaseModel):
     username: str
     email: str
@@ -48,13 +62,15 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
-# Utility functions
+# Hash password before saving
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
+# Verify password on login
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
+# Create JWT access token
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
@@ -62,6 +78,7 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+# Dependency to get current logged-in user by decoding JWT token
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -81,24 +98,19 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         raise credentials_exception
     return user
 
-# Events to connect/disconnect database
+# Create tables and connect to DB on startup
 @app.on_event("startup")
 async def startup():
     await database.connect()
-    # Create tables if not exist
-    query = """CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY,
-                username TEXT UNIQUE,
-                email TEXT UNIQUE,
-                hashed_password TEXT
-                )"""
-    await database.execute(query=query)
+    engine = sqlalchemy.create_engine(DATABASE_URL)
+    metadata.create_all(engine)  # This creates all tables defined in metadata
 
+# Disconnect DB on shutdown
 @app.on_event("shutdown")
 async def shutdown():
     await database.disconnect()
 
-# Signup endpoint
+# Signup endpoint allows users to register
 @app.post("/signup", status_code=201)
 async def signup(user: UserCreate):
     query = users.select().where(users.c.username == user.username)
@@ -110,7 +122,7 @@ async def signup(user: UserCreate):
     await database.execute(query)
     return {"message": "User created successfully"}
 
-# Token (login) endpoint
+# Login endpoint generates JWT token after verifying credentials
 @app.post("/token", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     query = users.select().where(users.c.username == form_data.username)
@@ -120,35 +132,26 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     access_token = create_access_token(data={"sub": user["username"]})
     return {"access_token": access_token, "token_type": "bearer"}
 
-# Protected user info endpoint
+# An example protected route returning user info
 @app.get("/me")
 async def read_users_me(current_user: dict = Depends(get_current_user)):
     return {"username": current_user["username"], "email": current_user["email"]}
 
-# TODO: Endpoint to get logged-in user's documents
+# Endpoint to get documents owned by current logged-in user
 @app.get("/my-documents")
 async def get_my_documents(current_user: dict = Depends(get_current_user)):
-    """
-    Returns a list of documents (filename, summary, upload time)
-    owned by the current authenticated user.
-    """
     query = documents.select().where(documents.c.user_id == current_user["id"])
     docs = await database.fetch_all(query)
-    
-    #format for frontend
     return [
         {
-            "filename" : doc["filename"],
+            "filename": doc["filename"],
             "summary": doc["summary"],
             "upload_time": doc["upload_time"].isoformat() if doc["upload_time"] else "",
         }
         for doc in docs
     ]
 
-# PDF Extraction utility (example)
-from app.document_processor import extract_text_from_pdf  # import your extraction code here
-
-# Protected PDF extract endpoint
+# Endpoint to upload PDF and extract text (as example)
 @app.post("/extract-text")
 async def extract_text_from_file(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     contents = await file.read()
@@ -158,5 +161,15 @@ async def extract_text_from_file(file: UploadFile = File(...), current_user: dic
     with open(temp_path, "wb") as f:
         f.write(contents)
     extracted_text = extract_text_from_pdf(temp_path)
-    os.remove(temp_path)  # cleanup temp file
+    os.remove(temp_path)  # cleanup temporary file
+    
+    # Save file info and summary to documents table
+    query = documents.insert().values(
+        user_id=current_user["id"],
+        filename=file.filename,
+        summary=extracted_text,        # or a processed summary
+        upload_time=datetime.utcnow()  # optional, default may already be set
+    )
+    await database.execute(query)
+    
     return {"filename": file.filename, "extracted_text": extracted_text}

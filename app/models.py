@@ -2,9 +2,9 @@ from sqlalchemy import ForeignKey, Table, Column, Integer, String, MetaData, Dat
 from databases import Database
 import datetime
 
-DB_URL = "sqlite:///./test.db"
+# DB_URL = "sqlite:///./test.db"
 
-database = Database(DB_URL)
+# database = Database(DB_URL)
 metadata = MetaData()
 
 
