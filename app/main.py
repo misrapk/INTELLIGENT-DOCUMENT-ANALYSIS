@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, requests, status, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from databases import Database
 from sqlalchemy import Table, Column, Integer, String, DateTime, ForeignKey, MetaData
@@ -6,6 +6,9 @@ from passlib.context import CryptContext
 from jose import jwt, JWTError
 from pydantic import BaseModel
 from datetime import datetime, timedelta
+from app.document_processor import extract_text_from_pdf
+from app.ai_workflow import summarize_health_report
+from app.models import documents
 import os
 import sqlalchemy
 
@@ -19,7 +22,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # Initialize FastAPI app
-app = FastAPI()
+app = FastAPI() 
 
 # Initialize the database and metadata ONLY ONCE here for all tables!
 database = Database(DATABASE_URL)
@@ -61,6 +64,33 @@ class UserCreate(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+    
+#summarise the pdf
+def perplexity_summarize(text: str) -> str:
+    api_url = "https://api.perplexity.ai/v1/answer"  # Use your endpoint if different
+    api_key = "YOUR_PERPLEXITY_API_KEY"  # Set your own key here
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "pplx-7b-chat",  # Or pplx-70b-chat if you have access
+        "messages": [
+            {"role": "system", "content": "You are a friendly assistant that makes patient health reports easy to understand."},
+            {"role": "user", "content": f"Summarize this health report for a patient in simple, clear language:\n{text}"}
+        ],
+        "max_tokens": 300,
+        "temperature": 0.7
+    }
+    try:
+        response = requests.post(api_url, headers=headers, json=data)
+        response.raise_for_status()
+        summary = response.json()["choices"][0]["message"]["content"]
+        return summary
+    except Exception as e:
+        return "(Perplexity summary unavailable.)"
+
 
 # Hash password before saving
 def hash_password(password: str) -> str:
@@ -163,13 +193,16 @@ async def extract_text_from_file(file: UploadFile = File(...), current_user: dic
     extracted_text = extract_text_from_pdf(temp_path)
     os.remove(temp_path)  # cleanup temporary file
     
+    #ai summary
+    ai_summary = summarize_health_report(extracted_text)
+    
     # Save file info and summary to documents table
     query = documents.insert().values(
         user_id=current_user["id"],
         filename=file.filename,
-        summary=extracted_text,        # or a processed summary
+        summary=ai_summary,        # or a processed summary
         upload_time=datetime.utcnow()  # optional, default may already be set
     )
     await database.execute(query)
     
-    return {"filename": file.filename, "extracted_text": extracted_text}
+    return {"filename": file.filename, "extracted_text": ai_summary}

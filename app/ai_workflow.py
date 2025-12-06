@@ -1,10 +1,21 @@
-from .perplexity_ai import ask_perplexity
+# app/ai_workflow.py
+from app.perplexity_ai import ask_perplexity
 
-def summarize_document(text):
+def summarize_health_report(text: str) -> str:
+    """
+    Take raw text from a health report and return a patient‑friendly summary using Perplexity.
+    """
     prompt = (
-        "Please summarize the following business document and "
-        "highlight main business entities, dates, and action items. "
-        "For medical documents, provide differential diagnoses for the disease"
-        "Text:\n" + text[:4000]  # Limit for demo; slice as needed for length
+        "You are a kind, calm medical explainer.\n"
+        "The user has uploaded a medical or health report.\n"
+        "Task for you:\n"
+        "- Read the report text.\n"
+        "- Explain the key findings in simple, everyday language.\n"
+        "- Clearly mention what seems normal and what might be abnormal.\n"
+        "- Avoid giving diagnosis or treatment; just explain.\n"
+        "- End with this sentence: 'Please consult your doctor for medical advice.'\n\n"
+        f"Health report text:\n{text[:8000]}"
     )
-    return ask_perplexity(prompt)
+
+    summary = ask_perplexity(prompt)
+    return summary
