@@ -55,14 +55,101 @@ def login_form():
             data={"username": username, "password": password}
         )
         if resp.status_code == 200:
-            st.session_state["auth_token"] = resp.json()["access_token"]
+            token = resp.json()['access_token']
+            st.session_state["auth_token"] = token
             st.session_state["username"] = username
+                        
+            
             st.success("Logged In Successfully")
             st.rerun()
         else:
             st.error("Login failed! Incorrect username or password.")
     if st.button("Back to Home", key="back_from_login"):
         st.session_state["show_signup"] = False
+        
+#health_scorecard
+def health_scorecard():
+
+    
+    if not st.session_state.get("auth_token"):
+        st.warning("No Token in session state")
+        return
+    
+    token = st.session_state['auth_token']
+    # st.write(f"DEBUG - Token exists: {token[:20]}...")
+    
+     
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        with st.spinner("Loading your health dashboard..."):
+            
+            resp = requests.get(f"{API_URL}/health-dashboard", headers=headers)
+            
+    except Exception as e:
+        st.error(f"❌ Connection error: {e}")
+        
+        return
+    
+    
+    # with st.spinner("Loading your health dashboard..."):
+    #     resp = requests.get(f"{API_URL}/health-dashboard", headers=headers)
+    
+    if resp.status_code == 200:
+        data = resp.json()
+        
+        if data["has_documents"]:
+            st.subheader("📊 Your Health Dashboard")
+            st.write(f"Based on {data['document_count']} uploaded report(s)")
+
+            # Display scores in columns with progress bars
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric(
+                    "Overall Health",
+                    f"{data['overall_health_score']}/100",
+                    delta=None,
+                )
+                st.progress(data['overall_health_score'] / 100)
+                
+                st.metric(
+                    "Physical Health",
+                    f"{data['physical_health_score']}/100",
+                    delta=None,
+                )
+                st.progress(data['physical_health_score'] / 100)
+
+            with col2:
+                st.metric(
+                    "Mental Health",
+                    f"{data['mental_health_score']}/100",
+                    delta=None,
+                )
+                st.progress(data['mental_health_score'] / 100)
+                
+                st.metric(
+                    "Internal Health",
+                    f"{data['internal_health_score']}/100",
+                    delta=None,
+                )
+                st.progress(data['internal_health_score'] / 100)
+                
+                
+                # Color coding based on score
+            if data['overall_health_score'] >= 80:
+                st.success("✅ Excellent! Keep maintaining your health.")
+            elif data['overall_health_score'] >= 60:
+                st.info("ℹ️ Good! Minor improvements recommended.")
+            else:
+                st.warning("⚠️ Please consult your doctor for personalized advice.")
+                
+        elif resp.status_code ==401:
+            st.error("Unauthorized. Please log in again!")
+        else:
+            st.info(data["message"])
+    else:
+        st.error("Could not load health dashboard.")
+
+
 
 # --- Dashboard & File Upload ---
 def main_dashboard():
@@ -82,9 +169,15 @@ def main_dashboard():
     st.title("Upload & Analyze Your Documents")
     st.write("Upload PDFs to extract summaries and insights. Each file remains tied to your account and visible only to you.")
     
+    #health scorecard
+    health_scorecard()
+    
+    st.markdown("---")
+    st.subheader("Upload a New Report")
     file = st.file_uploader("Choose PDF", type=["pdf"])
+    
+    
     uploaded = st.session_state.get("uploaded", False)
-
     if file and not uploaded:
         token = st.session_state["auth_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -134,3 +227,6 @@ if not st.session_state["auth_token"]:
         login_form()
 else:
     main_dashboard()
+
+
+

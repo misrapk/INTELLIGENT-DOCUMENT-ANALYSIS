@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, requests, status, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from databases import Database
 from sqlalchemy import Table, Column, Integer, String, DateTime, ForeignKey, MetaData
@@ -7,10 +7,11 @@ from jose import jwt, JWTError
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from app.document_processor import extract_text_from_pdf
-from app.ai_workflow import summarize_health_report
-from app.models import documents
+from app.ai_workflow import generate_health_scores, summarize_health_report
+from app.models import documents, metadata, users, database
 import os
 import sqlalchemy
+import requests
 
 # Import your pdf extraction code
 from app.document_processor import extract_text_from_pdf
@@ -26,28 +27,28 @@ app = FastAPI()
 
 # Initialize the database and metadata ONLY ONCE here for all tables!
 database = Database(DATABASE_URL)
-metadata = MetaData()
+# metadata = MetaData()
 
-# Define Users table
-users = Table(
-    "users",
-    metadata,
-    Column("id", Integer, primary_key=True),
-    Column("username", String(50), unique=True, index=True),
-    Column("email", String(100), unique=True, index=True),
-    Column("hashed_password", String(255)),
-)
+# # Define Users table
+# users = Table(
+#     "users",
+#     metadata,
+#     Column("id", Integer, primary_key=True),
+#     Column("username", String(50), unique=True, index=True),
+#     Column("email", String(100), unique=True, index=True),
+#     Column("hashed_password", String(255)),
+# )
 
-# Define Documents table
-documents = Table(
-    "documents",
-    metadata,
-    Column("id", Integer, primary_key=True),
-    Column("user_id", Integer, ForeignKey("users.id")),
-    Column("filename", String(100)),
-    Column("summary", String(1000)),
-    Column("upload_time", DateTime, default=datetime.utcnow),
-)
+# # Define Documents table
+# documents = Table(
+#     "documents",
+#     metadata,
+#     Column("id", Integer, primary_key=True),
+#     Column("user_id", Integer, ForeignKey("users.id")),
+#     Column("filename", String(100)),
+#     Column("summary", String(1000)),
+#     Column("upload_time", DateTime, default=datetime.utcnow),
+# )
 
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -107,6 +108,7 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+   
 
 # Dependency to get current logged-in user by decoding JWT token
 async def get_current_user(token: str = Depends(oauth2_scheme)):
@@ -133,7 +135,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 async def startup():
     await database.connect()
     engine = sqlalchemy.create_engine(DATABASE_URL)
+    print("🔧 Creating tables...")  # Add this
     metadata.create_all(engine)  # This creates all tables defined in metadata
+    print("🔧 CREATED tables...")  # Add this
+    
 
 # Disconnect DB on shutdown
 @app.on_event("shutdown")
@@ -196,13 +201,50 @@ async def extract_text_from_file(file: UploadFile = File(...), current_user: dic
     #ai summary
     ai_summary = summarize_health_report(extracted_text)
     
+    #generate health Score
+    health_scores = generate_health_scores(extracted_text)
     # Save file info and summary to documents table
     query = documents.insert().values(
         user_id=current_user["id"],
         filename=file.filename,
         summary=ai_summary,        # or a processed summary
+        overall_health_score=health_scores["overall_health_score"],
+        physical_health_score=health_scores["physical_health_score"],
+        mental_health_score=health_scores["mental_health_score"],
+        internal_health_score=health_scores["internal_health_score"],
         upload_time=datetime.utcnow()  # optional, default may already be set
     )
     await database.execute(query)
     
-    return {"filename": file.filename, "extracted_text": ai_summary}
+    return {"filename": file.filename, "extracted_text": ai_summary, "health_scores":health_scores}
+
+
+@app.get("/health-dashboard")
+async def get_health_dashboard(current_user: dict = Depends(get_current_user)):
+    query= documents.select().where(documents.c.user_id == current_user["id"])
+    docs = await database.fetch_all(query)
+    
+    if not docs:
+        # No documents uploaded yet
+        return {
+            "has_documents": False,
+            "overall_health_score": 0,
+            "physical_health_score": 0,
+            "mental_health_score": 0,
+            "internal_health_score": 0,
+            "message": "No health reports uploaded yet. Upload your first report to get health scores.",
+        }
+    # Calculate averages from all documents
+    overall_avg = sum(doc["overall_health_score"] for doc in docs) / len(docs)
+    physical_avg = sum(doc["physical_health_score"] for doc in docs) / len(docs)
+    mental_avg = sum(doc["mental_health_score"] for doc in docs) / len(docs)
+    internal_avg = sum(doc["internal_health_score"] for doc in docs) / len(docs)
+
+    return {
+        "has_documents": True,
+        "overall_health_score": round(overall_avg, 1),
+        "physical_health_score": round(physical_avg, 1),
+        "mental_health_score": round(mental_avg, 1),
+        "internal_health_score": round(internal_avg, 1),
+        "document_count":len(docs)
+    }

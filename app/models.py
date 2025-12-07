@@ -1,10 +1,10 @@
-from sqlalchemy import ForeignKey, Table, Column, Integer, String, MetaData, DateTime
+from sqlalchemy import ForeignKey, Table, Column, Integer, String, MetaData, DateTime, Float
 from databases import Database
 import datetime
 
-# DB_URL = "sqlite:///./test.db"
+DATABASE_URL = "sqlite:///./test.db"
 
-# database = Database(DB_URL)
+database = Database(DATABASE_URL)
 metadata = MetaData()
 
 
@@ -24,6 +24,13 @@ documents = Table(
     Column("user_id", Integer,ForeignKey("users.id")),
     Column("filename", String(100)),
     Column("summary", String(1000)),
-    Column("upload_time", DateTime, default=datetime.datetime.utcnow)
+    Column("upload_time", DateTime, default=datetime.datetime.utcnow),
+    
+    #for health score
+    Column("overall_health_score", Float, default=0.0), 
+    Column("physical_health_score", Float, default=0.0), 
+    Column("mental_health_score", Float, default=0.0), 
+    Column("internal_health_score", Float, default=0.0)
+    
 
 )
